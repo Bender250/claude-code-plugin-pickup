@@ -11,7 +11,9 @@ The `consume_pending()` helper is also imported by the SessionStart hook so that
 """
 import sys
 import os
+import re
 import json
+import datetime
 import subprocess
 
 HISTORY_DIR = os.path.expanduser("~/.claude/projects/")
@@ -135,24 +137,96 @@ def find_by_text(search_text):
         print(build_slim(matches[0]))
         return
 
-    print(f"--- Multiple matches for '{search_text}': ---")
+    rows = []
     for fp in matches:
         session_id = os.path.basename(fp).replace(".jsonl", "")
-        print(f"ID: {session_id} | {_preview(fp)}")
+        last_iso, preview = _session_meta(fp)
+        rows.append((last_iso, session_id, preview))
+    rows.sort(reverse=True)  # most-recent activity first (ISO sorts chronologically)
+
+    print(f"--- {len(matches)} matches for '{search_text}' (most recent first): ---")
+    for last_iso, session_id, preview in rows:
+        print(f"{_fmt_ts(last_iso):<16}  {session_id}  {preview}")
     print("\nRun: /pickup <ID>")
 
 
-def _preview(fp):
-    """First-line preview for the multiple-match picker."""
+def _fmt_ts(iso):
+    """Render an ISO-8601 UTC timestamp as local 'YYYY-MM-DD HH:MM'."""
+    if not iso:
+        return "?"
+    try:
+        dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return "?"
+
+
+def _block_text(content):
+    """Flatten a message's content (string or block list) to plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
+def _session_meta(fp):
+    """Return (last_activity_iso, preview) for the multiple-match picker.
+
+    Preview prefers a `summary` record (Claude Code's own conversation title);
+    otherwise it falls back to the first real user message. `last_activity_iso`
+    is the timestamp of the final record that carries one — used both to show
+    the date and to sort most-recent-first.
+    """
+    summary = None
+    first_user = None
+    last_iso = ""
     try:
         with open(fp, "r", encoding="utf-8") as f:
-            data = json.loads(f.readline() or "{}")
-    except (OSError, ValueError):
-        return "..."
-    raw = data.get("text") or data.get("content") or data.get("message", {}).get("content", "")
-    if isinstance(raw, list):
-        raw = " ".join(b.get("text", "") for b in raw if isinstance(b, dict))
-    return str(raw)[:50].strip() or "..."
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    continue
+
+                ts = data.get("timestamp")
+                if ts:
+                    last_iso = ts
+
+                rtype = data.get("type")
+                if summary is None and rtype == "summary":
+                    summary = (data.get("summary") or data.get("text") or "").strip()
+                elif first_user is None and rtype == "user":
+                    msg = data.get("message", {})
+                    content = msg.get("content") if isinstance(msg, dict) else None
+                    text = _block_text(content).strip()
+                    if text:
+                        first_user = text
+    except OSError:
+        return "", "..."
+
+    preview = _clean_preview(summary or first_user or "")
+    return last_iso, (preview[:70] or "...")
+
+
+def _clean_preview(text):
+    """Strip injected blocks/tags so previews read as plain prose.
+
+    Drops verbose `<system-reminder>`/`<ide_selection>` blocks wholesale, then
+    unwraps any remaining tags (e.g. `<command-name>/pickup</command-name>`)
+    keeping their inner text, and collapses whitespace.
+    """
+    text = re.sub(r"<system-reminder>.*?</system-reminder>", " ", text, flags=re.S)
+    text = re.sub(r"<ide_selection>.*?</ide_selection>", " ", text, flags=re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def route_request(query):
