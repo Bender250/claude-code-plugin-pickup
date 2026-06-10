@@ -33,11 +33,9 @@ The 1h staleness threshold is hardcoded as `STALE_SECONDS = 3600` in
 ## Install
 
 ```
-/plugin marketplace add kubicekk/pickup-plugin
+/plugin marketplace add Bender250/claude-code-plugin-pickup
 /plugin install pickup@kubicek-plugins
 ```
-
-(Replace `kubicekk/pickup-plugin` with the actual GitHub `owner/repo` once pushed.)
 
 Requires `python3` on PATH. The per-user stash lives at `~/.claude/pickup_pending.json`.
 
