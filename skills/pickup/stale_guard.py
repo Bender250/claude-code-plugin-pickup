@@ -71,7 +71,12 @@ def main():
         f"Pending message:\n  \"{prompt}\"\n\n"
         f"(To continue here anyway, resend prefixed with '!'.)"
     )
+    # Primary channel: JSON block. Its `reason` renders in the terminal CLI but
+    # is currently dropped by the VS Code extension's hook UI (anthropics/
+    # claude-code#15344, #50542). As a best-effort second channel, also write the
+    # message to stderr, which the extension does surface.
     print(json.dumps({"decision": "block", "reason": reason}))
+    sys.stderr.write(reason + "\n")
     sys.exit(0)
 
 
