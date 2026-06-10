@@ -1,0 +1,13 @@
+{
+  "name": "kubicek-plugins",
+  "owner": {
+    "name": "Karel Kubicek"
+  },
+  "plugins": [
+    {
+      "name": "pickup",
+      "source": "./",
+      "description": "Pick up a stale chat in a fresh, cheap context (skill + stale-guard hooks)."
+    }
+  ]
+}
