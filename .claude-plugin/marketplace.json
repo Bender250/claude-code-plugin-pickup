@@ -3,6 +3,9 @@
   "owner": {
     "name": "Karel Kubicek"
   },
+  "metadata": {
+    "description": "Karel Kubicek's Claude Code plugins."
+  },
   "plugins": [
     {
       "name": "pickup",
