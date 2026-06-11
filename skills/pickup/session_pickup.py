@@ -17,13 +17,16 @@ from slim_history import consume_pending  # noqa: E402
 
 def main():
     try:
-        data = json.load(sys.stdin)
+        json.load(sys.stdin)  # drain stdin; we key off the stash, not the payload
     except Exception:
         sys.exit(0)
 
-    if data.get("source") != "clear":
-        sys.exit(0)
-
+    # We do NOT gate on source == "clear": /clear does not reliably report that
+    # source (anthropics/claude-code#49937 — it often arrives as "startup"/"resume"),
+    # which is exactly why the auto-restore silently no-op'd. Instead we rely on the
+    # stash: consume_pending() only returns content when a FRESH stash exists (written
+    # seconds ago by the stale-guard right before this /clear), and returns None
+    # otherwise — so an ordinary startup with no pending stash is untouched.
     out = consume_pending()
     if not out:
         sys.exit(0)

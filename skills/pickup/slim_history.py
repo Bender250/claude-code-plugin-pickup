@@ -13,11 +13,13 @@ import sys
 import os
 import re
 import json
+import time
 import datetime
 import subprocess
 
 HISTORY_DIR = os.path.expanduser("~/.claude/projects/")
 PENDING_FILE = os.path.expanduser("~/.claude/pickup_pending.json")
+PENDING_TTL_SECONDS = 300  # stash older than this is a leftover, never replayed
 
 NOTICE = (
     "Reply with a concise acknowledgment of the topic above, then wait for the "
@@ -94,6 +96,21 @@ def consume_pending():
     """
     if not os.path.exists(PENDING_FILE):
         return None
+
+    # Freshness guard: the stash is written by the stale-guard immediately before
+    # the user runs /clear, so a usable stash is always seconds old. If it is older
+    # than this window it's a leftover (e.g. the user blocked, then walked away and
+    # later opened an unrelated session) and must NOT be replayed. This is what lets
+    # us drop the strict source=="clear" gate in the SessionStart hook — /clear does
+    # not reliably report source=="clear" (anthropics/claude-code#49937), so we key
+    # off stash presence + recency instead of the unreliable source string.
+    try:
+        if time.time() - os.path.getmtime(PENDING_FILE) > PENDING_TTL_SECONDS:
+            os.remove(PENDING_FILE)
+            return None
+    except OSError:
+        return None
+
     try:
         with open(PENDING_FILE, "r", encoding="utf-8") as f:
             pend = json.load(f)
