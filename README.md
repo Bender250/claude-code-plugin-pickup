@@ -46,6 +46,11 @@ in the terminal CLI**. The VS Code / Cursor native extensions do not fire
 /plugin install pickup@kubicek-plugins
 ```
 
+Update
+```
+/plugin marketplace update kubicek-plugins
+```
+
 Requires `python3` on PATH. The per-user stash lives at `~/.claude/pickup_pending.json`.
 
 ## Layout
