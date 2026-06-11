@@ -137,17 +137,26 @@ def find_by_text(search_text):
         print(build_slim(matches[0]))
         return
 
+    _print_picker(matches, f"matches for '{search_text}'")
+
+
+def _print_picker(files, label):
+    """Render a numbered list of candidate sessions for the user to choose from.
+
+    IDs are printed in full so a copy-back resolves exactly; prefix resolution
+    in `route_request` also accepts the short form if it gets truncated.
+    """
     rows = []
-    for fp in matches:
+    for fp in files:
         session_id = os.path.basename(fp).replace(".jsonl", "")
         last_iso, preview = _session_meta(fp)
         rows.append((last_iso, session_id, preview))
     rows.sort(reverse=True)  # most-recent activity first (ISO sorts chronologically)
 
-    print(f"--- {len(matches)} matches for '{search_text}' (most recent first): ---")
+    print(f"--- {len(files)} {label} (most recent first): ---")
     for last_iso, session_id, preview in rows:
         print(f"{_fmt_ts(last_iso):<16}  {session_id}  {preview}")
-    print("\nRun: /pickup <ID>")
+    print("\nRun: /pickup <full-ID-from-the-first-column>")
 
 
 def _fmt_ts(iso):
@@ -230,15 +239,20 @@ def _clean_preview(text):
 
 
 def route_request(query):
-    # A bare id (no spaces, long) -> resolve the JSONL directly.
-    if " " not in query and len(query) >= 20:
+    # A bare hex/uuid token (or a prefix of one) -> resolve the JSONL directly.
+    # Matched by shape, not length, so a truncated 8-char short ID still works.
+    if " " not in query and re.fullmatch(r"[0-9a-fA-F][0-9a-fA-F-]{5,}", query):
         res = subprocess.run(
-            ["find", HISTORY_DIR, "-name", f"{query}.jsonl"], capture_output=True, text=True
+            ["find", HISTORY_DIR, "-name", f"{query}*.jsonl"], capture_output=True, text=True
         )
-        target_file = res.stdout.strip()
-        if target_file and os.path.exists(target_file):
-            print(build_slim(target_file))
+        files = [f for f in res.stdout.strip().split("\n") if f.endswith(".jsonl")]
+        if len(files) == 1:
+            print(build_slim(files[0]))
             return
+        if len(files) > 1:
+            _print_picker(files, f"sessions matching id prefix '{query}'")
+            return
+        # No id match -> fall through and treat it as a search term.
 
     find_by_text(query)
 
