@@ -71,13 +71,15 @@ def main():
         f"Pending message:\n  \"{prompt}\"\n\n"
         f"(To continue here anyway, resend prefixed with '!'.)"
     )
-    # Primary channel: JSON block. Its `reason` renders in the terminal CLI but
-    # is currently dropped by the VS Code extension's hook UI (anthropics/
-    # claude-code#15344, #50542). As a best-effort second channel, also write the
-    # message to stderr, which the extension does surface.
-    print(json.dumps({"decision": "block", "reason": reason}))
+    # The supported way to block a UserPromptSubmit prompt is exit code 2 with the
+    # reason on stderr (the JSON {"decision":"block"} form is PreToolUse-only and is
+    # NOT honored here). This works in the terminal CLI. NOTE: it has no effect in
+    # the VS Code / Cursor extension, which does not fire UserPromptSubmit hooks at
+    # all (anthropics/claude-code#15021, "not planned"); there the guard is silently
+    # skipped and you must run /pickup manually. The pending stash is still written
+    # above so a later /clear can restore this session regardless.
     sys.stderr.write(reason + "\n")
-    sys.exit(0)
+    sys.exit(2)
 
 
 if __name__ == "__main__":

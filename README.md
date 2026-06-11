@@ -30,6 +30,15 @@ deliberate `!continue anyway` never block.
 The 1h staleness threshold is hardcoded as `STALE_SECONDS = 3600` in
 `skills/pickup/stale_guard.py`.
 
+## Editor support
+
+The automatic stale-guard relies on the `UserPromptSubmit` hook, which **only fires
+in the terminal CLI**. The VS Code / Cursor native extensions do not fire
+`UserPromptSubmit` hooks at all ([claude-code#15021](https://github.com/anthropics/claude-code/issues/15021),
+"not planned"), so in those editors the guard is silently skipped — a stale chat is
+*not* auto-blocked. The `/pickup` skill still works there for manual restore; just run
+`/pickup <session-id>` or `/pickup <search-text>` yourself.
+
 ## Install
 
 ```
