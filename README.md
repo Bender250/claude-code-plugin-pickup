@@ -12,23 +12,44 @@ while keeping the agent fully capable — in a clean context window.
 
 Two hooks plus one skill, all bundled:
 
-- **`UserPromptSubmit` guard** — when you type into a chat idle >1h, it blocks that
-  first message (so the stale context isn't re-sent) and stashes *this* session's
-  transcript path. It fires *before* `/clear`, the only moment the pre-clear session
-  identity is knowable.
+- **`UserPromptSubmit` guard** — on *every* prompt it bookmarks *this* session's
+  transcript path to the stash (because `/clear` starts a brand-new session, this is
+  the only moment the pre-clear identity is knowable). Additionally, if the chat has
+  been idle >1h it blocks that first message (so the stale context isn't re-sent) and
+  records the typed prompt to resurface later.
 - **`SessionStart` auto-restore** — run `/clear` and the slimmed previous session is
-  injected into the fresh context automatically, with your pending message resurfaced.
-  **`/clear` alone is enough** — no second command.
+  injected into the fresh context automatically. **`/clear` alone is enough** — no
+  second command. It restores into the *new* (empty) session, so it's cheap. Gated on
+  `source=="clear"` so it never leaks into an ordinary new session or a `--resume`.
 - **`/pickup` skill** — manual entry point:
-  - `/pickup` (no args) — restore the stashed session
+  - `/pickup` (no args) — restore the bookmarked session
   - `/pickup <search-text>` — find a past session by content
   - `/pickup <session-id>` — restore a specific session
 
-Escape hatches: anything starting with `/` or `!` passes through, so `/clear` and a
-deliberate `!continue anyway` never block.
+Escape hatches: anything starting with `/` or `!` passes through and does *not*
+rewrite the stash, so `/clear` and a deliberate `!continue anyway` never block, and
+`/clear` preserves a pending prompt from a prior block.
 
-The 1h staleness threshold is hardcoded as `STALE_SECONDS = 3600` in
-`skills/pickup/stale_guard.py`.
+## Configuration
+
+Optional. Drop a JSON file at `~/.claude/pickup_config.json` with any subset:
+
+```json
+{
+  "auto_restore_on_clear": true,
+  "stale_seconds": 3600,
+  "pending_ttl_seconds": 43200
+}
+```
+
+- **`auto_restore_on_clear`** (default `true`) — whether `/clear` auto-injects the
+  previous thread. Set `false` if you prefer `/clear` to be a clean break; the stash
+  is still written, so manual `/pickup` keeps working.
+- **`stale_seconds`** (default `3600`) — idle threshold before the guard blocks.
+- **`pending_ttl_seconds`** (default `43200` = 12h) — a stash older than this is a
+  leftover and is never replayed.
+
+See [`PROTOCOL.md`](PROTOCOL.md) for the verified hook/skill protocol this relies on.
 
 ## Editor support
 

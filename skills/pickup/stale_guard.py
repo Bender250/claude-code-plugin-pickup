@@ -1,26 +1,41 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit guardrail for the `pickup` skill.
+"""UserPromptSubmit hook for the `pickup` skill — always-write stash + stale guard.
 
-When the user types into a chat that has been idle longer than STALE_SECONDS,
-continuing would re-send the full stale context and burn cache/quota. Instead of
-letting that first message through, this hook:
+This fires on every prompt (terminal CLI only; it does not run in the native VS
+Code/Cursor extension panel — anthropics/claude-code#15021). It does two things:
 
-  1. Stashes the CURRENT session's transcript path + the typed prompt to
-     PENDING_FILE (the hook fires BEFORE /clear, so this is the only point where
-     the pre-clear session identity is known).
-  2. Blocks the prompt and tells the user to run /clear then /pickup (no args),
-     which restores a slimmed version of THIS session from the stash.
+  1. ALWAYS bookmarks the current session to PENDING_FILE (transcript_path +
+     session_id). Because /clear starts a brand-new session, this is the only
+     moment the pre-clear session identity is known. Keeping the bookmark current
+     on every prompt is what lets /clear (or a no-arg /pickup) restore the exact
+     thread you were just in — deterministically, no guessing among open chats.
 
-Escape hatches: prompts starting with '/' (slash commands) or '!' pass through
-untouched, so /clear, /pickup, and a deliberate "!continue anyway" never block.
+  2. If the chat has been idle longer than `stale_seconds`, it ALSO blocks the
+     prompt (exit 2 + stderr — the supported UserPromptSubmit block mechanism)
+     and records the typed prompt so it can resurface after /clear. Continuing in
+     a stale chat re-sends the full context and burns cache/quota; /clear instead.
+
+Slash commands ('/') and the explicit escape hatch ('!') pass through untouched
+and do NOT rewrite the stash, so /clear preserves a pending prompt from a block.
 """
 import sys
 import os
 import json
 import time
 
-STALE_SECONDS = 3600  # 1h idle => treat as stale
-PENDING_FILE = os.path.expanduser("~/.claude/pickup_pending.json")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from slim_history import PENDING_FILE, load_config  # noqa: E402
+
+
+def _write_stash(transcript_path, session_id, prompt=None):
+    payload = {"transcript_path": transcript_path, "session_id": session_id}
+    if prompt:
+        payload["prompt"] = prompt
+    try:
+        with open(PENDING_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
 
 
 def main():
@@ -33,7 +48,8 @@ def main():
     transcript_path = data.get("transcript_path") or ""
     session_id = data.get("session_id") or ""
 
-    # Let slash commands and the explicit escape hatch through.
+    # Let slash commands and the explicit escape hatch through WITHOUT touching the
+    # stash (so /clear keeps any pending prompt a prior block recorded).
     if prompt.startswith("/") or prompt.startswith("!"):
         sys.exit(0)
 
@@ -45,22 +61,15 @@ def main():
     except OSError:
         sys.exit(0)
 
-    if idle < STALE_SECONDS:
-        sys.exit(0)  # fresh chat: behave normally
+    stale_seconds = load_config()["stale_seconds"]
 
-    # Stale chat -> stash identity + the message the user just typed.
-    try:
-        with open(PENDING_FILE, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "transcript_path": transcript_path,
-                    "session_id": session_id,
-                    "prompt": prompt,
-                },
-                f,
-            )
-    except Exception:
-        pass
+    if idle < stale_seconds:
+        # Fresh chat: just keep the bookmark current and let the prompt through.
+        _write_stash(transcript_path, session_id)
+        sys.exit(0)
+
+    # Stale chat: bookmark + record the pending prompt, then block.
+    _write_stash(transcript_path, session_id, prompt)
 
     mins = int(idle // 60)
     reason = (
@@ -71,13 +80,7 @@ def main():
         f"Pending message:\n  \"{prompt}\"\n\n"
         f"(To continue here anyway, resend prefixed with '!'.)"
     )
-    # The supported way to block a UserPromptSubmit prompt is exit code 2 with the
-    # reason on stderr (the JSON {"decision":"block"} form is PreToolUse-only and is
-    # NOT honored here). This works in the terminal CLI. NOTE: it has no effect in
-    # the VS Code / Cursor extension, which does not fire UserPromptSubmit hooks at
-    # all (anthropics/claude-code#15021, "not planned"); there the guard is silently
-    # skipped and you must run /pickup manually. The pending stash is still written
-    # above so a later /clear can restore this session regardless.
+    # Supported block mechanism for UserPromptSubmit: exit code 2 + stderr.
     sys.stderr.write(reason + "\n")
     sys.exit(2)
 

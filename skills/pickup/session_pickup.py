@@ -1,32 +1,43 @@
 #!/usr/bin/env python3
-"""SessionStart hook — auto-pickup on /clear.
+"""SessionStart hook — auto-restore the just-cleared thread on /clear.
 
-When the stale-guard hook intercepts a message in an idle chat it stashes that
-session. If the user then runs /clear, this hook fires with source == "clear",
-reads the stash, and injects the slimmed previous session as fresh context — so
-/clear ALONE restores the conversation, with no second command. It only acts when
-a stash exists, so ordinary /clear (fresh start) is untouched.
+The UserPromptSubmit guard keeps a bookmark of the current session in the stash.
+When you run /clear, Claude Code ends that session and starts a NEW one, firing
+SessionStart with source=="clear". This hook then reads the bookmark and injects
+the slimmed previous session as fresh context — so /clear alone picks up exactly
+where you left off, cheaply (it runs in the new, empty session).
+
+Gating notes (all verified against CLI v2.1.170, see PROTOCOL.md):
+  - We gate on source=="clear": the terminal CLI reports it correctly. This is
+    what stops the bookmark from leaking into an ordinary new session ("startup")
+    or a --resume. (The native VS Code/Cursor extension mis-reports source as
+    "startup" — anthropics/claude-code#49937 — and doesn't fire UserPromptSubmit
+    to write a stash anyway, so auto-restore is CLI-only; use /pickup there.)
+  - It only acts when a fresh stash exists, so an ordinary /clear with no prior
+    activity is untouched.
+  - auto_restore_on_clear (config) lets a user opt out and get a plain /clear;
+    the stash is still written, so manual /pickup keeps working.
 """
 import sys
 import os
 import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from slim_history import consume_pending  # noqa: E402
+from slim_history import consume_pending, load_config  # noqa: E402
 
 
 def main():
     try:
-        json.load(sys.stdin)  # drain stdin; we key off the stash, not the payload
+        data = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
 
-    # We do NOT gate on source == "clear": /clear does not reliably report that
-    # source (anthropics/claude-code#49937 — it often arrives as "startup"/"resume"),
-    # which is exactly why the auto-restore silently no-op'd. Instead we rely on the
-    # stash: consume_pending() only returns content when a FRESH stash exists (written
-    # seconds ago by the stale-guard right before this /clear), and returns None
-    # otherwise — so an ordinary startup with no pending stash is untouched.
+    if data.get("source") != "clear":
+        sys.exit(0)
+
+    if not load_config()["auto_restore_on_clear"]:
+        sys.exit(0)
+
     out = consume_pending()
     if not out:
         sys.exit(0)

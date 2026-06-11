@@ -19,7 +19,32 @@ import subprocess
 
 HISTORY_DIR = os.path.expanduser("~/.claude/projects/")
 PENDING_FILE = os.path.expanduser("~/.claude/pickup_pending.json")
-PENDING_TTL_SECONDS = 300  # stash older than this is a leftover, never replayed
+CONFIG_FILE = os.path.expanduser("~/.claude/pickup_config.json")
+
+# User-overridable settings (drop a JSON file at CONFIG_FILE with any subset).
+DEFAULT_CONFIG = {
+    # Auto-restore the just-cleared thread on /clear. Set false for a plain /clear
+    # (the stash is still written, so manual `/pickup` keeps working).
+    "auto_restore_on_clear": True,
+    # Idle threshold (seconds) before the guard blocks a prompt with a warning.
+    "stale_seconds": 3600,
+    # A stash older than this is treated as a leftover and never replayed. Generous
+    # by default so /clear after a long pause still restores; short enough that a
+    # day-old stash never leaks into an unrelated session.
+    "pending_ttl_seconds": 43200,  # 12h
+}
+
+
+def load_config():
+    cfg = dict(DEFAULT_CONFIG)
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            user = json.load(f)
+        if isinstance(user, dict):
+            cfg.update({k: user[k] for k in DEFAULT_CONFIG if k in user})
+    except (OSError, ValueError):
+        pass
+    return cfg
 
 NOTICE = (
     "Reply with a concise acknowledgment of the topic above, then wait for the "
@@ -97,15 +122,13 @@ def consume_pending():
     if not os.path.exists(PENDING_FILE):
         return None
 
-    # Freshness guard: the stash is written by the stale-guard immediately before
-    # the user runs /clear, so a usable stash is always seconds old. If it is older
-    # than this window it's a leftover (e.g. the user blocked, then walked away and
-    # later opened an unrelated session) and must NOT be replayed. This is what lets
-    # us drop the strict source=="clear" gate in the SessionStart hook — /clear does
-    # not reliably report source=="clear" (anthropics/claude-code#49937), so we key
-    # off stash presence + recency instead of the unreliable source string.
+    # Freshness guard: the always-on guard rewrites the stash on every prompt, so a
+    # usable stash points at the session you were just in. If it is older than the
+    # TTL it's a leftover (e.g. you worked in a chat, never cleared it, then opened
+    # an unrelated session) and must NOT be replayed.
+    ttl = load_config()["pending_ttl_seconds"]
     try:
-        if time.time() - os.path.getmtime(PENDING_FILE) > PENDING_TTL_SECONDS:
+        if time.time() - os.path.getmtime(PENDING_FILE) > ttl:
             os.remove(PENDING_FILE)
             return None
     except OSError:
