@@ -18,7 +18,7 @@ import datetime
 import subprocess
 
 HISTORY_DIR = os.path.expanduser("~/.claude/projects/")
-PENDING_FILE = os.path.expanduser("~/.claude/pickup_pending.json")
+PENDING_DIR = os.path.expanduser("~/.claude/pickup")
 CONFIG_FILE = os.path.expanduser("~/.claude/pickup_config.json")
 
 # User-overridable settings (drop a JSON file at CONFIG_FILE with any subset).
@@ -45,6 +45,78 @@ def load_config():
     except (OSError, ValueError):
         pass
     return cfg
+
+
+def _ps(pid):
+    """Return (ppid, comm) for a pid, or (None, None)."""
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        ppid, comm = out.split(None, 1)
+        return int(ppid), comm
+    except Exception:
+        return None, None
+
+
+def instance_key():
+    """Identify *this terminal's* claude process.
+
+    One `claude` process serves one conversation at a time, and /clear keeps the
+    SAME process (it does not fork), so the claude PID is stable across /clear yet
+    unique per terminal. Keying the stash by it gives each concurrent chat its own
+    private slot — no shared file, no race, even for two chats in the same project.
+
+    Walks the process ancestry (hook -> shell -> claude) to find the claude PID.
+    Falls back to "shared" (a single slot) only if no claude ancestor is found.
+    """
+    pid = os.getpid()
+    for _ in range(12):
+        ppid, comm = _ps(pid)
+        if comm and "claude" in comm.lower():
+            return str(pid)
+        if not ppid or ppid <= 1:
+            break
+        pid = ppid
+    return "shared"
+
+
+def pending_file():
+    return os.path.join(PENDING_DIR, instance_key() + ".json")
+
+
+def write_pending(transcript_path, session_id, prompt=None):
+    payload = {"transcript_path": transcript_path, "session_id": session_id}
+    if prompt:
+        payload["prompt"] = prompt
+    try:
+        os.makedirs(PENDING_DIR, exist_ok=True)
+        with open(pending_file(), "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+
+def _sweep_dead_pending():
+    """Best-effort cleanup of stash files whose claude process is gone."""
+    try:
+        entries = os.listdir(PENDING_DIR)
+    except OSError:
+        return
+    for name in entries:
+        if name == "shared.json" or not name.endswith(".json"):
+            continue
+        pid = name[:-5]
+        if not pid.isdigit():
+            continue
+        try:
+            os.kill(int(pid), 0)  # alive -> keep
+        except OSError:
+            try:
+                os.remove(os.path.join(PENDING_DIR, name))
+            except OSError:
+                pass
 
 NOTICE = (
     "Reply with a concise acknowledgment of the topic above, then wait for the "
@@ -117,31 +189,33 @@ def consume_pending():
     """Build the restore text from the stale-guard stash, then delete the stash.
 
     Returns the text, or None if there is nothing pending / it is unusable.
-    Shared by the no-arg skill path and the SessionStart hook.
+    Shared by the no-arg skill path and the SessionStart hook. Reads THIS terminal's
+    per-claude-process slot (see instance_key), so concurrent chats never collide.
     """
-    if not os.path.exists(PENDING_FILE):
+    _sweep_dead_pending()
+    pf = pending_file()
+    if not os.path.exists(pf):
         return None
 
-    # Freshness guard: the always-on guard rewrites the stash on every prompt, so a
-    # usable stash points at the session you were just in. If it is older than the
-    # TTL it's a leftover (e.g. you worked in a chat, never cleared it, then opened
-    # an unrelated session) and must NOT be replayed.
+    # Freshness guard: a usable stash points at the session you were just in. If it
+    # is older than the TTL it's a leftover (e.g. you worked in a chat, never cleared
+    # it, then much later /cleared a fresh one in the same terminal) and is dropped.
     ttl = load_config()["pending_ttl_seconds"]
     try:
-        if time.time() - os.path.getmtime(PENDING_FILE) > ttl:
-            os.remove(PENDING_FILE)
+        if time.time() - os.path.getmtime(pf) > ttl:
+            os.remove(pf)
             return None
     except OSError:
         return None
 
     try:
-        with open(PENDING_FILE, "r", encoding="utf-8") as f:
+        with open(pf, "r", encoding="utf-8") as f:
             pend = json.load(f)
     except (OSError, ValueError):
         return None
 
     try:
-        os.remove(PENDING_FILE)  # consume regardless, so it never replays
+        os.remove(pf)  # consume regardless, so it never replays
     except OSError:
         pass
 

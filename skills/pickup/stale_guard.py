@@ -24,18 +24,7 @@ import json
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from slim_history import PENDING_FILE, load_config  # noqa: E402
-
-
-def _write_stash(transcript_path, session_id, prompt=None):
-    payload = {"transcript_path": transcript_path, "session_id": session_id}
-    if prompt:
-        payload["prompt"] = prompt
-    try:
-        with open(PENDING_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-    except Exception:
-        pass
+from slim_history import write_pending, load_config  # noqa: E402
 
 
 def main():
@@ -65,11 +54,11 @@ def main():
 
     if idle < stale_seconds:
         # Fresh chat: just keep the bookmark current and let the prompt through.
-        _write_stash(transcript_path, session_id)
+        write_pending(transcript_path, session_id)
         sys.exit(0)
 
     # Stale chat: bookmark + record the pending prompt, then block.
-    _write_stash(transcript_path, session_id, prompt)
+    write_pending(transcript_path, session_id, prompt)
 
     mins = int(idle // 60)
     reason = (

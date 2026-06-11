@@ -13,10 +13,13 @@ while keeping the agent fully capable — in a clean context window.
 Two hooks plus one skill, all bundled:
 
 - **`UserPromptSubmit` guard** — on *every* prompt it bookmarks *this* session's
-  transcript path to the stash (because `/clear` starts a brand-new session, this is
-  the only moment the pre-clear identity is knowable). Additionally, if the chat has
-  been idle >1h it blocks that first message (so the stale context isn't re-sent) and
-  records the typed prompt to resurface later.
+  transcript path (because `/clear` starts a brand-new session, this is the only
+  moment the pre-clear identity is knowable). The bookmark is keyed by the **`claude`
+  process** that owns the terminal — one process serves one conversation and `/clear`
+  keeps the same process, so each concurrent chat gets its own private slot and they
+  never collide (no shared-file race, even across projects). Additionally, if the chat
+  has been idle >1h it blocks that first message (so the stale context isn't re-sent)
+  and records the typed prompt to resurface later.
 - **`SessionStart` auto-restore** — run `/clear` and the slimmed previous session is
   injected into the fresh context automatically. **`/clear` alone is enough** — no
   second command. It restores into the *new* (empty) session, so it's cheap. Gated on
@@ -72,7 +75,8 @@ Update
 /plugin marketplace update kubicek-plugins
 ```
 
-Requires `python3` on PATH. The per-user stash lives at `~/.claude/pickup_pending.json`.
+Requires `python3` on PATH. Per-terminal bookmarks live under `~/.claude/pickup/<pid>.json`
+(one slot per `claude` process; dead-process slots are swept automatically).
 
 ## Layout
 

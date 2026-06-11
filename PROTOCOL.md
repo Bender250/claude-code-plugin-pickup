@@ -137,11 +137,23 @@ So most "it did nothing" reports are **no-stash** situations, not restore bugs.
 ## 9. Design implications (verified-safe)
 
 - A hook that **always** records the current `transcript_path` to the stash on
-  every `UserPromptSubmit`/`Stop` makes restore **deterministic and instantly
-  testable** (type → `/clear` → restore), with **no 1h-idle requirement**.
-  Unambiguous across many open chats because the stash holds the *exact*
-  `transcript_path` of the chat you were in. **CLI-only** (the writer hook is
-  dead in the native extension).
+  every `UserPromptSubmit` makes restore **deterministic and instantly testable**
+  (type → `/clear` → restore), with **no 1h-idle requirement**. **CLI-only** (the
+  writer hook is dead in the native extension).
+- **Concurrency (the race fix):** a single global stash file collides when several
+  chats are open — whichever typed last wins, so `/clear` in chat A can restore
+  chat B. **[OBS]** confirmed: a `law_collector` `/clear` restored an unrelated
+  `pickup-plugin` chat because they shared `~/.claude/pickup_pending.json`.
+  The fix is **per-process keying**: one `claude` process serves one conversation,
+  and `/clear` does **not** fork (same process, same PID), so the bookmark is keyed
+  by the ancestor `claude` PID (`~/.claude/pickup/<pid>.json`, found by walking the
+  hook's process ancestry — **[OBS]** verified `python3 → zsh → claude`). Each
+  terminal gets a private slot; two chats can never collide, even in the same
+  project. Dead-PID slots are swept on read.
+- **No deterministic predecessor link exists.** **[OBS]** the post-`/clear`
+  session has `parentUuid: null` and records no cleared-session id — only `cwd`.
+  So the new session cannot *ask CC* which session it replaced; the per-process
+  bookmark (written before the clear, read after, same process) is what supplies it.
 - Bare `/pickup` reading that stash works as a manual restore. Because it runs in
   the **post-`/clear` (fresh, cheap) session**, it does **not** re-send the stale
   context — the cache concern is unfounded **as long as you `/pickup` after
