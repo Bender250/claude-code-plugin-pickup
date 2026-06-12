@@ -87,6 +87,19 @@ lands in the *new* post-clear session, which is why it's cheap.
   "additionalContext":"…"}}` on exit 0 is the documented way to inject context.
 - **[OBS]** Confirmed working — see §3, stored as a `hook_additional_context`
   attachment in the new session.
+- **[OBS]** **Size limit — oversized `additionalContext` is silently truncated.** When
+  the injected text exceeds an inline threshold, the harness spills the full payload to
+  a `tool-results/hook-*-additionalContext.txt` file and injects Claude only a
+  `<persisted-output>` wrapper with the **first ~2KB** as a preview. Measured across 150
+  transcripts: `hook_additional_context` attachments inline intact up to **~9.2KB** and
+  are spilled above that (observed spills at 34.9KB / 62.5KB, previews ~2.3KB). The
+  2KB preview is the *head* of the digest — for a restore that head is the least useful
+  part (the `<history>`/instruction header), so a large restore effectively delivers
+  nothing usable. **Mitigation:** `slim_history.py` keeps the digest under
+  `max_inline_chars` (default 9000); past that it injects a topic/description stub and
+  writes the full slim transcript to `~/.claude/pickup/restore-<id>.txt` for the agent
+  to `Read` on demand. Exact threshold is undocumented; 9000 is a safe margin below the
+  observed 9.2KB ceiling.
 
 ---
 

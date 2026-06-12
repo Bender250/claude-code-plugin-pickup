@@ -8,6 +8,14 @@ quota just to warm the cache. `pickup` slims that transcript down to a structure
 `<history>` digest (dropping verbose tool output) so restoring costs a few percent
 while keeping the agent fully capable — in a clean context window.
 
+The digest drops verbose tool output and pure slash-command / local-command echoes
+(`/model`, `/clear`, their stdout — the agent never sees these in a live chat anyway),
+and collapses a restored `/pickup` wrapper to just its payload, so a pickup-of-a-pickup
+nests cleanly as `<history>…<history>oldest</history>…</history>` instead of repeating
+boilerplate. If the digest is still too large to inline safely, `pickup` injects a
+topic + description stub and points the agent at the full slim transcript on disk to
+read on demand (see `max_inline_chars`).
+
 ## How it works
 
 Two hooks plus one skill, all bundled:
@@ -42,7 +50,8 @@ Optional. Drop a JSON file at `~/.claude/pickup_config.json` with any subset:
   "auto_restore_on_clear": true,
   "show_restored_transcript": true,
   "stale_seconds": 3600,
-  "pending_ttl_seconds": 43200
+  "pending_ttl_seconds": 43200,
+  "max_inline_chars": 9000
 }
 ```
 
@@ -56,6 +65,12 @@ Optional. Drop a JSON file at `~/.claude/pickup_config.json` with any subset:
 - **`stale_seconds`** (default `3600`) — idle threshold before the guard blocks.
 - **`pending_ttl_seconds`** (default `43200` = 12h) — a stash older than this is a
   leftover and is never replayed.
+- **`max_inline_chars`** (default `9000`) — if the slimmed transcript is larger than
+  this, it is **not** inlined (Claude Code silently spills oversized hook output to a
+  file and shows Claude only a ~2KB preview — the useless header). Instead a compact
+  **topic + description stub** is injected, pointing Claude at the full slim transcript
+  (written to `~/.claude/pickup/restore-<id>.txt`) to `Read` on demand. The empirical
+  inline ceiling is ~9.2KB, so the default leaves a safety margin.
 
 See [`PROTOCOL.md`](PROTOCOL.md) for the verified hook/skill protocol this relies on.
 

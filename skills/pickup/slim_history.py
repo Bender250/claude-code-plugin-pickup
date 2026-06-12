@@ -37,6 +37,12 @@ DEFAULT_CONFIG = {
     # (via the hook's systemMessage channel — visible to the user, not re-sent to
     # Claude) so you can read what was picked up. Set false for a silent restore.
     "show_restored_transcript": True,
+    # If the slimmed transcript is larger than this many chars, don't inline it
+    # (the harness silently spills oversized hook output to a file and shows Claude
+    # only a ~2KB preview — the useless header). Instead inject a compact topic +
+    # description stub pointing Claude at the full slim file to Read on demand.
+    # Verified: hook additionalContext inlines up to ~9.2KB before it gets spilled.
+    "max_inline_chars": 9000,
 }
 
 
@@ -129,13 +135,46 @@ NOTICE = (
 )
 
 
+# A user "message" that is really just a slash-command invocation or a local-command
+# echo. These are never shown to the agent in a live session, so they're pure noise in
+# a restore (and they're what made nested /pickup restores so messy).
+_CMD_ECHO_RE = re.compile(
+    r"^<(command-name|command-message|command-args|"
+    r"local-command-caveat|local-command-stdout|local-command-stderr)\b", re.I)
+
+
+def _strip_pickup_wrapper(text):
+    """Collapse a restored /pickup instruction block down to just its payload.
+
+    A session that was itself created via /pickup carries one huge boilerplate user
+    message (`Base directory… # Instruction… Absorb the script output…` plus the inner
+    `<history>`). Keep only the `Restored session:` header + the `<history>` block, so
+    a pickup-of-a-pickup reads cleanly as `<history>…<history>oldest</history>…</history>`
+    instead of repeating the wrapper noise — and the useful content isn't pushed past
+    the inline-size limit by boilerplate.
+    """
+    # Anchor on whole-line tags: the real block has `<history>` / `</history>` each on
+    # their own line, whereas the skill's instruction prose mentions an inline
+    # `<history>` in backticks — matching that would slice mid-instruction.
+    opener = re.search(r"(?m)^<history>[ \t]*$", text)
+    closers = list(re.finditer(r"(?m)^</history>[ \t]*$", text))
+    if not opener or not closers:
+        return text
+    h0, h1 = opener.start(), closers[-1].end()
+    # Keep the `Restored session:` header line that immediately precedes the block.
+    heads = list(re.finditer(r"(?m)^Restored session:.*$", text[:h0]))
+    start = heads[-1].start() if heads else h0
+    return text[start:h1].strip()
+
+
 def _iter_entries(target_file):
     """Yield (lineno, role, text) for meaningful records in a JSONL transcript.
 
     `lineno` is the 1-based source line number, so the agent can drill into any
     single step for full detail with:  sed -n '<N>p' <file>
     `role` is one of USER / ASSISTANT / TOOL. Verbose tool_result outputs are
-    dropped on purpose to keep the restore cheap.
+    dropped on purpose to keep the restore cheap. Pure slash-command/local-command
+    echoes are dropped, and restored /pickup wrappers are collapsed to their payload.
     """
     with open(target_file, "r", encoding="utf-8") as f:
         for lineno, raw in enumerate(f, 1):
@@ -155,8 +194,15 @@ def _iter_entries(target_file):
             )
 
             if isinstance(content, str):
-                if role in ("user", "assistant") and content.strip():
-                    yield lineno, role.upper(), content.strip()
+                text = content.strip()
+                if not text:
+                    continue
+                if role == "user":
+                    if _CMD_ECHO_RE.match(text):
+                        continue  # slash-command / local-command echo — agent never sees it
+                    text = _strip_pickup_wrapper(text)
+                if role in ("user", "assistant"):
+                    yield lineno, role.upper(), text
                 continue
 
             if isinstance(content, list):
@@ -165,7 +211,13 @@ def _iter_entries(target_file):
                         continue
                     btype = block.get("type")
                     if btype == "text" and block.get("text", "").strip():
-                        yield lineno, (role or "assistant").upper(), block["text"].strip()
+                        brole = (role or "assistant").upper()
+                        text = block["text"].strip()
+                        if brole == "USER":
+                            if _CMD_ECHO_RE.match(text):
+                                continue  # slash-command / local-command echo
+                            text = _strip_pickup_wrapper(text)
+                        yield lineno, brole, text
                     elif btype == "tool_use":
                         yield lineno, "TOOL", block.get("name", "tool")
 
@@ -188,6 +240,92 @@ def build_slim(target_file):
     out.append("</history>")
     out.append(NOTICE)
     return "\n".join(out)
+
+
+def restore_text(target_file):
+    """The text to hand back for a restore: the full slimmed transcript, or — when it
+    would exceed the inline limit and get silently truncated to a useless 2KB preview —
+    a compact topic/description stub pointing at the full slim file to Read on demand."""
+    full = build_slim(target_file)
+    if len(full) > load_config()["max_inline_chars"]:
+        return _restore_stub(target_file, full)
+    return full
+
+
+def _session_title(target_file):
+    """Best available one-line topic: an explicit `summary` if Claude Code ever wrote
+    one (rare), else the most recent autogenerated `ai-title` (present for nearly all
+    sessions)."""
+    title = None
+    try:
+        with open(target_file, "r", encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    continue
+                rtype = data.get("type")
+                if rtype == "summary":
+                    s = (data.get("summary") or data.get("text") or "").strip()
+                    if s:
+                        return s
+                elif rtype == "ai-title":
+                    t = (data.get("aiTitle") or data.get("title") or "").strip()
+                    if t:
+                        title = t
+    except OSError:
+        pass
+    return title
+
+
+def _topic_and_desc(target_file):
+    """(topic, description) for the oversized-restore stub. Deterministic, no LLM:
+    title from _session_title; description from the first real user message and the
+    last assistant turn (cleaned of injected tags)."""
+    first_user = last_asst = None
+    for _, role, text in _iter_entries(target_file):
+        if role == "USER" and first_user is None and not text.startswith("Restored session:"):
+            first_user = text  # the genuine task message, not a collapsed nested restore
+        elif role == "ASSISTANT":
+            last_asst = text
+    parts = []
+    if first_user:
+        parts.append("Opened with: " + _clean_preview(first_user)[:220])
+    if last_asst:
+        parts.append("Last assistant turn: " + _clean_preview(last_asst)[:220])
+    topic = _session_title(target_file) or _clean_preview(first_user or "")[:80] or "(untitled)"
+    return topic, "\n".join(parts)
+
+
+def _restore_stub(target_file, full):
+    """Compact stand-in for an oversized restore: topic + description + a pointer to the
+    full slim transcript written to disk, which Claude must Read before continuing.
+    Avoids the harness silently spilling the inlined context to a 2KB preview."""
+    sid = os.path.basename(target_file).replace(".jsonl", "")
+    topic, desc = _topic_and_desc(target_file)
+    slim_path = os.path.join(PENDING_DIR, "restore-" + sid + ".txt")
+    try:
+        os.makedirs(PENDING_DIR, exist_ok=True)
+        with open(slim_path, "w", encoding="utf-8") as f:
+            f.write(full)
+    except OSError:
+        slim_path = target_file  # fall back to the raw JSONL if we can't stage the slim copy
+    approx = len(full) // 4
+    return (
+        f"Restored session (large — NOT inlined): {target_file}\n"
+        f"Topic: {topic}\n"
+        + (desc + "\n" if desc else "")
+        + (
+            f"\nThe slimmed transcript (~{approx} tokens) exceeds the inline limit, so it "
+            "was not\ninjected here. Before you continue, you MUST read it in full:\n"
+            f"    Read {slim_path}\n"
+            "Only after reading it, give a one-line acknowledgment of the topic and wait. "
+            "Do not answer or act on anything until you have read it."
+        )
+    )
 
 
 _USER_VIEW_LABELS = {"USER": "▸ You", "ASSISTANT": "● Claude"}
@@ -275,7 +413,7 @@ def consume_pending(with_user_view=False):
     if not target or not os.path.exists(target):
         return None
 
-    out = build_slim(target)
+    out = restore_text(target)
     prompt = (pend.get("prompt") or "").strip()
     if prompt:
         out += (
@@ -415,7 +553,7 @@ def route_request(query):
         )
         files = [f for f in res.stdout.strip().split("\n") if f.endswith(".jsonl")]
         if len(files) == 1:
-            print(build_slim(files[0]))
+            print(restore_text(files[0]))
             return
         if len(files) > 1:
             _print_picker(files, f"sessions matching id prefix '{query}'")
