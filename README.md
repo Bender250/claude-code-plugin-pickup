@@ -40,6 +40,7 @@ Optional. Drop a JSON file at `~/.claude/pickup_config.json` with any subset:
 ```json
 {
   "auto_restore_on_clear": true,
+  "show_restored_transcript": true,
   "stale_seconds": 3600,
   "pending_ttl_seconds": 43200
 }
@@ -48,6 +49,10 @@ Optional. Drop a JSON file at `~/.claude/pickup_config.json` with any subset:
 - **`auto_restore_on_clear`** (default `true`) — whether `/clear` auto-injects the
   previous thread. Set `false` if you prefer `/clear` to be a clean break; the stash
   is still written, so manual `/pickup` keeps working.
+- **`show_restored_transcript`** (default `true`) — on `/clear` auto-restore, also
+  render the slimmed transcript back to **you** (via the hook's `systemMessage`
+  channel, shown to the user but not re-sent to Claude) so you can read what was
+  picked up. Set `false` for a silent restore.
 - **`stale_seconds`** (default `3600`) — idle threshold before the guard blocks.
 - **`pending_ttl_seconds`** (default `43200` = 12h) — a stash older than this is a
   leftover and is never replayed.

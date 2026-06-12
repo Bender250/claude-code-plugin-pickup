@@ -15,6 +15,7 @@ import re
 import json
 import time
 import datetime
+import textwrap
 import subprocess
 
 HISTORY_DIR = os.path.expanduser("~/.claude/projects/")
@@ -32,6 +33,10 @@ DEFAULT_CONFIG = {
     # by default so /clear after a long pause still restores; short enough that a
     # day-old stash never leaks into an unrelated session.
     "pending_ttl_seconds": 43200,  # 12h
+    # On /clear auto-restore, also render the restored transcript back to YOU
+    # (via the hook's systemMessage channel — visible to the user, not re-sent to
+    # Claude) so you can read what was picked up. Set false for a silent restore.
+    "show_restored_transcript": True,
 }
 
 
@@ -185,10 +190,57 @@ def build_slim(target_file):
     return "\n".join(out)
 
 
-def consume_pending():
+_USER_VIEW_LABELS = {"USER": "▸ You", "ASSISTANT": "● Claude"}
+
+
+def _wrap(text, indent="    "):
+    """Wrap a block of text to a readable width, preserving paragraph breaks."""
+    out = []
+    for para in text.splitlines() or [""]:
+        if para.strip():
+            out.append(textwrap.fill(
+                para, width=96, initial_indent=indent, subsequent_indent=indent,
+                break_long_words=False, break_on_hyphens=False))
+        else:
+            out.append("")
+    return out
+
+
+def build_user_view(target_file, prompt=None):
+    """Human-readable rendering of the restored transcript.
+
+    Goes to the SessionStart hook's `systemMessage` field, which Claude Code shows
+    to the USER but does NOT feed back to Claude — so you can actually read what was
+    picked up, while Claude still gets the machine-oriented <history> via
+    additionalContext. Tool steps are shown dimly; <history> tags / drill-down line
+    numbers / the LLM NOTICE are dropped as they're noise for a human reader.
+    """
+    sid = os.path.basename(target_file).replace(".jsonl", "")
+    bar = "─" * 60
+    lines = [bar, f"  📋 Restored session (slimmed) · {sid}", bar, ""]
+    for _, role, text in _iter_entries(target_file):
+        if role == "TOOL":
+            lines.append(f"    ⚙  {text}")
+            continue
+        lines.append(f"{_USER_VIEW_LABELS.get(role, role.title())}:")
+        lines.extend(_wrap(text))
+        lines.append("")
+    if prompt:
+        lines.append(bar)
+        lines.append("▸ You (pending — the message you tried to send):")
+        lines.extend(_wrap(prompt))
+    lines.append(bar)
+    return "\n".join(lines)
+
+
+def consume_pending(with_user_view=False):
     """Build the restore text from the stale-guard stash, then delete the stash.
 
-    Returns the text, or None if there is nothing pending / it is unusable.
+    Returns the Claude-facing context text, or None if there is nothing pending /
+    it is unusable. With `with_user_view=True`, returns `(context, user_view)` on
+    success instead — the second item is the human-readable rendering for the hook's
+    systemMessage channel. Still returns None on the nothing-to-restore paths.
+
     Shared by the no-arg skill path and the SessionStart hook. Reads THIS terminal's
     per-claude-process slot (see instance_key), so concurrent chats never collide.
     """
@@ -231,6 +283,8 @@ def consume_pending():
             "This is what the user tried to send into the stale chat. After your brief "
             "acknowledgment, treat it as the user's current request and proceed."
         )
+    if with_user_view:
+        return out, build_user_view(target, prompt)
     return out
 
 

@@ -35,19 +35,27 @@ def main():
     if data.get("source") != "clear":
         sys.exit(0)
 
-    if not load_config()["auto_restore_on_clear"]:
+    cfg = load_config()
+    if not cfg["auto_restore_on_clear"]:
         sys.exit(0)
 
-    out = consume_pending()
-    if not out:
+    result = consume_pending(with_user_view=True)
+    if not result:
         sys.exit(0)
+    context, user_view = result
 
-    print(json.dumps({
+    # additionalContext -> Claude (machine-oriented <history>).
+    # systemMessage     -> the USER only (human-readable transcript), so you can
+    #                      read what was restored. Verified channels per CLI docs.
+    out = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": out,
+            "additionalContext": context,
         }
-    }))
+    }  # type: dict[str, object]
+    if cfg["show_restored_transcript"]:
+        out["systemMessage"] = user_view
+    print(json.dumps(out))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 {
   "name": "pickup",
   "description": "Pick up a stale chat in a fresh, cheap context. Detects when you type into a chat idle >1h, and on /clear auto-restores a slimmed transcript of that exact session instead of re-sending the full context and burning cache/quota.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": {
     "name": "Karel Kubicek",
     "email": "karel.kubicek@vaultjs.com"
