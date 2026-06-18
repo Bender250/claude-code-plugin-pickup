@@ -436,7 +436,12 @@ def find_by_text(search_text):
     matches = [m for m in res.stdout.strip().split("\n") if m.endswith(".jsonl")]
 
     if not matches:
-        print("❌ No matches found.")
+        print(f"❌ No saved session matched '{search_text}'.")
+        print(
+            "Instruction: tell the user no transcript matched and suggest a shorter or "
+            "different search term (or a session ID). Do NOT treat the search text as a "
+            "task to perform yourself."
+        )
         return
 
     if len(matches) == 1:
@@ -462,7 +467,12 @@ def _print_picker(files, label):
     print(f"--- {len(files)} {label} (most recent first): ---")
     for last_iso, session_id, preview in rows:
         print(f"{_fmt_ts(last_iso):<16}  {session_id}  {preview}")
-    print("\nRun: /pickup <full-ID-from-the-first-column>")
+    print(
+        "\nInstruction: ask the user which session to pick. Show each ID **exactly** as "
+        "printed above (never truncate or abbreviate it) so a copy-back resolves cleanly. "
+        "Do NOT pick one yourself or answer the search text as a task."
+    )
+    print("Then run: /pickup <full-ID-from-the-first-column>")
 
 
 def _fmt_ts(iso):
@@ -567,7 +577,11 @@ def pickup_pending():
     out = consume_pending()
     if out is None:
         print("❌ No pending session to pickup.")
-        print("Use: /pickup <search-text>   or   /pickup <session-id>")
+        print(
+            "Instruction: tell the user there is nothing stashed to restore and that they "
+            "can run `/pickup <search-text>` or `/pickup <session-id>`. Do NOT improvise a "
+            "task from the (empty) arguments."
+        )
         return
     print(out)
 
