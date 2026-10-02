@@ -140,10 +140,15 @@ in the terminal CLI**. The VS Code / Cursor native extensions do not fire
 /plugin install pickup@kubicek-plugins
 ```
 
-Update
+Update from your terminal:
+```sh
+claude plugin marketplace update kubicek-plugins
+claude plugin update pickup@kubicek-plugins
 ```
-/plugin marketplace update kubicek-plugins
-```
+
+Start a new Claude Code session to load the update, or run `/reload-plugins` in
+versions that support it. Confirm pickup is version **0.9.0** with
+`claude plugin list`. See [Claude's plugin update instructions](https://code.claude.com/docs/en/discover-plugins#update-plugins-now).
 
 Requires `python3` on PATH. Per-terminal bookmarks live under `~/.claude/pickup/<pid>.json`
 (one slot per `claude` process; dead-process slots are swept automatically).

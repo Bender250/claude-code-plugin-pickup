@@ -1,0 +1,7 @@
+{
+  "name": "pickup",
+  "version": "0.9.0",
+  "description": "Continue a slim Claude Code or Codex conversation in either assistant.",
+  "skills": "./skills/",
+  "hooks": "./hooks/codex.json"
+}
