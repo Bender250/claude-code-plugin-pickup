@@ -11,6 +11,37 @@ This document records the **Claude Code hook/skill protocol facts** that the
 
 Last verified: 2026-06-11, CLI v2.1.170.
 
+## Codex interoperability (2026-10-02)
+
+- **[DOC]** Codex supports skills, plugins, and command lifecycle hooks. Its
+  `UserPromptSubmit` accepts exit 2 with a blocking reason on stderr. Inputs include
+  `session_id` and nullable `transcript_path`. Plugin commands receive `PLUGIN_ROOT`.
+  Hooks require user trust before execution. Sources:
+  https://learn.chatgpt.com/docs/hooks and
+  https://developers.openai.com/plugins/build/plugins.
+- **[DOC]** Codex skills require `name` and `description`, support `$pickup`
+  invocation, and can be symlinked into `~/.agents/skills`:
+  https://learn.chatgpt.com/docs/build-skills.
+- **[DOC]** `/new` starts a fresh Codex chat in the same CLI:
+  https://learn.chatgpt.com/docs/developer-commands.
+- **[OBS]** Installed CLI 0.160.0 successfully added this repository's marketplace
+  and installed pickup 0.9.0 with an isolated temporary `CODEX_HOME`. No live user
+  plugin configuration was changed during verification.
+- **[OBS]** Local rollout files contain `session_meta.payload.id`, legacy
+  `response_item` messages, mirrored `event_msg` messages, and paginated-history
+  `event_msg.item_completed` items (`UserMessage`, `AgentMessage`,
+  `CommandExecution`, `FileChange`). The parser supports both generations and
+  preserves source line numbers. It does not read or change Codex SQLite databases.
+- **[TEST]** Synthetic logs verify cross-provider ID/search routing, duplicate
+  filtering, archived logs, oversized restores, repeated pickups, and guard outputs.
+  A quota-exhaustion handoff and live interactive Codex hook execution have not been
+  exercised. Transcript formats are internal, not a stable documented interface.
+
+Codex recovery deliberately uses an explicit ID instead of a per-process stash.
+Multiple chats can share a Codex daemon, so Claude's ancestor-PID invariant does
+not hold there. Claude hooks remain in `hooks/hooks.json`; Codex explicitly selects
+`hooks/codex.json` in its manifest to avoid default-discovering the Claude hooks.
+
 ---
 
 ## 1. Execution environment matters: CLI vs native extension

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Search or restore slimmed Claude Code session transcripts.
+"""Search or restore slimmed Claude Code and Codex session transcripts.
 
 Used three ways:
   - `slim_history.py <search-text>`   find a past session by content
@@ -17,10 +17,11 @@ import time
 import datetime
 import textwrap
 import subprocess
+from session_sources import codex_entries, identity, records, restored_payload, sessions
 
-HISTORY_DIR = os.path.expanduser("~/.claude/projects/")
-PENDING_DIR = os.path.expanduser("~/.claude/pickup")
-CONFIG_FILE = os.path.expanduser("~/.claude/pickup_config.json")
+CLAUDE_CONFIG_DIR = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
+PENDING_DIR = os.path.join(CLAUDE_CONFIG_DIR, "pickup")
+CONFIG_FILE = os.path.join(CLAUDE_CONFIG_DIR, "pickup_config.json")
 
 # User-overridable settings (drop a JSON file at CONFIG_FILE with any subset).
 DEFAULT_CONFIG = {
@@ -46,10 +47,13 @@ DEFAULT_CONFIG = {
 }
 
 
-def load_config():
+def load_config(runtime="claude"):
     cfg = dict(DEFAULT_CONFIG)
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        config_file = CONFIG_FILE
+        if runtime == "codex":
+            config_file = os.path.join(os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex")), "pickup_config.json")
+        with open(config_file, "r", encoding="utf-8") as f:
             user = json.load(f)
         if isinstance(user, dict):
             cfg.update({k: user[k] for k in DEFAULT_CONFIG if k in user})
@@ -176,6 +180,14 @@ def _iter_entries(target_file):
     dropped on purpose to keep the restore cheap. Pure slash-command/local-command
     echoes are dropped, and restored /pickup wrappers are collapsed to their payload.
     """
+    if identity(target_file)[0] == "codex":
+        for lineno, role, text in codex_entries(target_file):
+            if role == "USER":
+                if _CMD_ECHO_RE.match(text):
+                    continue
+                text = _strip_pickup_wrapper(text)
+            yield lineno, role, text
+        return
     with open(target_file, "r", encoding="utf-8") as f:
         for lineno, raw in enumerate(f, 1):
             stripped = raw.strip()
@@ -184,6 +196,8 @@ def _iter_entries(target_file):
             try:
                 data = json.loads(stripped)
             except ValueError:
+                continue
+            if not isinstance(data, dict):
                 continue
 
             role = data.get("type") or data.get("message", {}).get("role")
@@ -220,6 +234,10 @@ def _iter_entries(target_file):
                         yield lineno, brole, text
                     elif btype == "tool_use":
                         yield lineno, "TOOL", block.get("name", "tool")
+                    elif btype == "tool_result":
+                        restored = restored_payload(block.get("content"))
+                        if restored:
+                            yield lineno, "USER", restored
 
 
 def build_slim(target_file):
@@ -247,7 +265,7 @@ def restore_text(target_file):
     would exceed the inline limit and get silently truncated to a useless 2KB preview —
     a compact topic/description stub pointing at the full slim file to Read on demand."""
     full = build_slim(target_file)
-    if len(full) > load_config()["max_inline_chars"]:
+    if len(full) > load_config("codex" if os.environ.get("CODEX_THREAD_ID") else "claude")["max_inline_chars"]:
         return _restore_stub(target_file, full)
     return full
 
@@ -266,6 +284,8 @@ def _session_title(target_file):
                 try:
                     data = json.loads(raw)
                 except ValueError:
+                    continue
+                if not isinstance(data, dict):
                     continue
                 rtype = data.get("type")
                 if rtype == "summary":
@@ -304,9 +324,9 @@ def _restore_stub(target_file, full):
     """Compact stand-in for an oversized restore: topic + description + a pointer to the
     full slim transcript written to disk, which Claude must Read before continuing.
     Avoids the harness silently spilling the inlined context to a 2KB preview."""
-    sid = os.path.basename(target_file).replace(".jsonl", "")
+    provider, sid = identity(target_file)
     topic, desc = _topic_and_desc(target_file)
-    slim_path = os.path.join(PENDING_DIR, "restore-" + sid + ".txt")
+    slim_path = os.path.join(PENDING_DIR, "restore-" + provider + "-" + sid + ".txt")
     try:
         os.makedirs(PENDING_DIR, exist_ok=True)
         with open(slim_path, "w", encoding="utf-8") as f:
@@ -328,7 +348,7 @@ def _restore_stub(target_file, full):
     )
 
 
-_USER_VIEW_LABELS = {"USER": "▸ You", "ASSISTANT": "● Claude"}
+_USER_VIEW_LABELS = {"USER": "▸ You", "ASSISTANT": "● Assistant"}
 
 
 def _wrap(text, indent="    "):
@@ -426,14 +446,21 @@ def consume_pending(with_user_view=False):
     return out
 
 
-def find_by_text(search_text):
+def find_by_text(search_text, provider=None):
     """List or restore sessions whose content matches `search_text`."""
-    cmd = ["rg", "-l", "-i", search_text, HISTORY_DIR]
-    if subprocess.run(["which", "rg"], capture_output=True).returncode != 0:
-        cmd = ["grep", "-r", "-l", "-i", search_text, HISTORY_DIR]
-
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    matches = [m for m in res.stdout.strip().split("\n") if m.endswith(".jsonl")]
+    # Literal search of conversational content avoids matching Codex's repeated
+    # base instructions and treating leading '-' in user queries as shell flags.
+    needle = search_text.casefold()
+    matches = []
+    for path in sessions(provider):
+        try:
+            title = _session_title(path) or ""
+            if needle in title.casefold() or any(
+                    needle in text.casefold() for _, role, text in _iter_entries(path)
+                    if role in ("USER", "ASSISTANT")):
+                matches.append(path)
+        except OSError:
+            continue
 
     if not matches:
         print(f"❌ No saved session matched '{search_text}'.")
@@ -445,7 +472,7 @@ def find_by_text(search_text):
         return
 
     if len(matches) == 1:
-        print(build_slim(matches[0]))
+        print(restore_text(matches[0]))
         return
 
     _print_picker(matches, f"matches for '{search_text}'")
@@ -459,7 +486,8 @@ def _print_picker(files, label):
     """
     rows = []
     for fp in files:
-        session_id = os.path.basename(fp).replace(".jsonl", "")
+        provider, sid = identity(fp)
+        session_id = provider + ":" + sid
         last_iso, preview = _session_meta(fp)
         rows.append((last_iso, session_id, preview))
     rows.sort(reverse=True)  # most-recent activity first (ISO sorts chronologically)
@@ -472,7 +500,7 @@ def _print_picker(files, label):
         "printed above (never truncate or abbreviate it) so a copy-back resolves cleanly. "
         "Do NOT pick one yourself or answer the search text as a task."
     )
-    print("Then run: /pickup <full-ID-from-the-first-column>")
+    print("Then run pickup with the full provider:ID printed above (/pickup in Claude, $pickup in Codex).")
 
 
 def _fmt_ts(iso):
@@ -507,6 +535,12 @@ def _session_meta(fp):
     is the timestamp of the final record that carries one — used both to show
     the date and to sort most-recent-first.
     """
+    if identity(fp)[0] == "codex":
+        last_iso = ""
+        for _, data in records(fp):
+            last_iso = data.get("timestamp") or last_iso
+        first_user = next((text for _, role, text in _iter_entries(fp) if role == "USER"), "")
+        return last_iso, _clean_preview(first_user)[:70] or "..."
     summary = None
     first_user = None
     last_iso = ""
@@ -519,6 +553,8 @@ def _session_meta(fp):
                 try:
                     data = json.loads(raw)
                 except ValueError:
+                    continue
+                if not isinstance(data, dict):
                     continue
 
                 ts = data.get("timestamp")
@@ -555,13 +591,26 @@ def _clean_preview(text):
 
 
 def route_request(query):
+    provider = None
+    if query.startswith(("claude:", "codex:")):
+        provider, query = query.split(":", 1)
+        query = query.strip()
+    if not query:
+        print("Instruction: ask for a session ID or search text after the provider prefix.")
+        return
     # A bare hex/uuid token (or a prefix of one) -> resolve the JSONL directly.
     # Matched by shape, not length, so a truncated 8-char short ID still works.
     if " " not in query and re.fullmatch(r"[0-9a-fA-F][0-9a-fA-F-]{5,}", query):
-        res = subprocess.run(
-            ["find", HISTORY_DIR, "-name", f"{query}*.jsonl"], capture_output=True, text=True
-        )
-        files = [f for f in res.stdout.strip().split("\n") if f.endswith(".jsonl")]
+        files = []
+        for path in sessions(provider):
+            try:
+                if identity(path)[1].lower().startswith(query.lower()):
+                    files.append(path)
+            except OSError:
+                continue
+        exact = [path for path in files if identity(path)[1].lower() == query.lower()]
+        if exact:
+            files = exact
         if len(files) == 1:
             print(restore_text(files[0]))
             return
@@ -570,7 +619,7 @@ def route_request(query):
             return
         # No id match -> fall through and treat it as a search term.
 
-    find_by_text(query)
+    find_by_text(query, provider)
 
 
 def pickup_pending():
